@@ -26,6 +26,10 @@ void inicializarBusqueda();
 int nodoEstaEnRuta(int nodo);
 int buscarObjetivo(int nodo);
 int todosObjetivosVisitados();
+void imprimirRuta(int ruta[], int largo);
+void actualizarMejorRuta();
+void recorrerGrafo(int nodoActual); 
+
 
 int obtenerNumero(char linea[])
 {
@@ -276,6 +280,183 @@ int todosObjetivosVisitados()
     */
     return 1;
 }
+void imprimirRuta(int ruta[], int largo)
+{
+    int i;
+
+    /*
+       Esta funcion imprime una ruta almacenada en un arreglo.
+
+       El arreglo ruta contiene los nodos recorridos.
+       La variable largo indica cuantas posiciones validas tiene la ruta.
+
+       Ejemplo:
+       ruta[0] = 10
+       ruta[1] = 4
+       ruta[2] = 1
+       largo = 3
+
+       Se imprime:
+       10 -> 4 -> 1
+    */
+
+    for (i = 0; i < largo; i++) {
+
+        /*
+           Imprimimos el nodo que esta en la posicion i de la ruta.
+        */
+        printf("%d", ruta[i]);
+
+        /*
+           Si no estamos en el ultimo nodo, imprimimos una flecha.
+           Esto evita que la ruta termine con una flecha extra.
+        */
+        if (i < largo - 1) {
+            printf(" -> ");
+        }
+    }
+
+    printf("\n");
+}
+
+void actualizarMejorRuta()
+{
+    int i;
+
+    /*
+       Esta funcion compara la ruta actual con la mejor ruta encontrada.
+
+       largoRutaActual indica cuantos nodos tiene la ruta actual.
+       mejorLargo guarda el largo de la mejor ruta encontrada hasta ahora.
+
+       Si la ruta actual es mas corta que la mejor ruta guardada,
+       entonces se actualiza mejorRuta.
+    */
+
+    if (largoRutaActual < mejorLargo) {
+
+        mejorLargo = largoRutaActual;
+
+        /*
+           Copiamos la ruta actual en mejorRuta.
+        */
+        for (i = 0; i < largoRutaActual; i++) {
+            mejorRuta[i] = rutaActual[i];
+        }
+
+        /*
+           Limpiamos el resto del arreglo mejorRuta con -1
+           para evitar que queden datos antiguos.
+        */
+        for (i = largoRutaActual; i < MAX_RUTA; i++) {
+            mejorRuta[i] = -1;
+        }
+
+        printf("\nNueva mejor ruta encontrada:\n");
+        imprimirRuta(mejorRuta, mejorLargo);
+        printf("Cantidad de nodos visitados: %d\n", mejorLargo);
+        printf("Cantidad de saltos: %d\n", mejorLargo - 1);
+    }
+}
+
+void recorrerGrafo(int nodoActual)
+{
+    int i;
+    int vecino;
+    int posicionObjetivo;
+    int estabaVisitado;
+
+    /*
+       Si la ruta ya alcanzó el máximo permitido,
+       no seguimos recorriendo para evitar salirnos del arreglo.
+    */
+    if (largoRutaActual >= MAX_RUTA) {
+        return;
+    }
+
+    /*
+       Agregamos el nodo actual a la ruta.
+    */
+    rutaActual[largoRutaActual] = nodoActual;
+    largoRutaActual++;
+
+    /*
+       Revisamos si el nodo actual es uno de los nodos obligatorios.
+       Si lo es, guardamos su posicion dentro del arreglo objetivos.
+       Si no lo es, buscarObjetivo retorna -1.
+    */
+    posicionObjetivo = buscarObjetivo(nodoActual);
+    estabaVisitado = 0;
+
+    /*
+       Si el nodo actual era objetivo, lo marcamos como visitado.
+       Antes guardamos si ya estaba visitado, porque al volver
+       de la recursion debemos restaurar el estado anterior.
+    */
+    if (posicionObjetivo != -1) {
+        estabaVisitado = visitados[posicionObjetivo];
+        visitados[posicionObjetivo] = 1;
+    }
+
+    /*
+       Si ya pasamos por los 5 nodos obligatorios,
+       la ruta actual es una solucion valida.
+       Entonces revisamos si es mejor que la mejor ruta guardada.
+    */
+    if (todosObjetivosVisitados() == 1) {
+        actualizarMejorRuta();
+    } else {
+
+        /*
+           Si todavia faltan objetivos, recorremos los vecinos
+           del nodo actual.
+
+           Como el grafo fue guardado como matriz de vecinos,
+           cada fila tiene vecinos hasta encontrar un -1.
+        */
+        i = 0;
+
+        while (i <= CANT_NODOS && grafo[nodoActual][i] != -1) {
+            vecino = grafo[nodoActual][i];
+
+            /*
+               Solo avanzamos si el vecino no está ya en la ruta.
+               Esto evita ciclos como:
+               10 -> 4 -> 1 -> 10 -> 4 -> ...
+            */
+            if (nodoEstaEnRuta(vecino) == 0) {
+
+                /*
+                   Poda simple:
+                   si la ruta actual ya es igual o más larga que
+                   la mejor ruta encontrada, no conviene seguir.
+                */
+                if (largoRutaActual < mejorLargo) {
+                    recorrerGrafo(vecino);
+                }
+            }
+
+            i++;
+        }
+    }
+
+    /*
+       Backtracking:
+       Antes de salir de la funcion, debemos deshacer los cambios
+       hechos en este nivel de recursion.
+
+       Si marcamos un objetivo como visitado, lo dejamos como estaba antes.
+    */
+    if (posicionObjetivo != -1) {
+        visitados[posicionObjetivo] = estabaVisitado;
+    }
+
+    /*
+       Sacamos el nodo actual de la ruta.
+    */
+    largoRutaActual--;
+    rutaActual[largoRutaActual] = -1;
+}
 
 int main()
 {
@@ -285,32 +466,22 @@ int main()
 
     inicializarBusqueda();
 
-    rutaActual[0] = nodoInicial;
-    rutaActual[1] = 4;
-    rutaActual[2] = 1;
-    largoRutaActual = 3;
+    printf("\nBuscando rutas...\n");
 
-    printf("\nPrueba nodoEstaEnRuta:\n");
-    printf("El nodo 10 esta en ruta? %d\n", nodoEstaEnRuta(10));
-    printf("El nodo 8 esta en ruta? %d\n", nodoEstaEnRuta(8));
+    recorrerGrafo(nodoInicial);
 
-    printf("\nPrueba buscarObjetivo:\n");
-    printf("El nodo 17 es objetivo? posicion: %d\n", buscarObjetivo(17));
-    printf("El nodo 6 es objetivo? posicion: %d\n", buscarObjetivo(6));
+    printf("\nMejor ruta final encontrada:\n");
 
-    printf("\nPrueba todosObjetivosVisitados:\n");
-
-    visitados[0] = 1;
-    visitados[1] = 1;
-    visitados[2] = 0;
-    visitados[3] = 1;
-    visitados[4] = 1;
-
-    printf("Con un objetivo faltante: %d\n", todosObjetivosVisitados());
-
-    visitados[2] = 1;
-
-    printf("Con todos los objetivos visitados: %d\n", todosObjetivosVisitados());
+    if (mejorLargo == INFINITO) 
+    {
+        printf("No se encontro una ruta que pase por todos los objetivos.\n");
+    } 
+    else
+    {
+        imprimirRuta(mejorRuta, mejorLargo);
+        printf("Cantidad de nodos visitados: %d\n", mejorLargo);
+        printf("Cantidad de saltos: %d\n", mejorLargo - 1);
+    }
 
     return 0;
 }
