@@ -1,11 +1,23 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <pthread.h>
+#include <semaphore.h>
 
 #define CANT_NODOS 30
 #define CANT_OBJETIVOS 5
 #define MAX_RUTA 31
 #define INFINITO 9999
+#define MAX_HEBRAS 40
+
+
+struct EstadoRuta 
+{
+    int nodoActual;
+    int ruta[MAX_RUTA];
+    int visitados[CANT_OBJETIVOS];
+    int largoRuta;
+};
 
 int grafo[CANT_NODOS + 1][CANT_NODOS + 1];
 int objetivos[CANT_OBJETIVOS];
@@ -17,6 +29,8 @@ int visitados[CANT_OBJETIVOS];
 
 int largoRutaActual;
 int mejorLargo;
+sem_t semaforoHebras;
+pthread_mutex_t mutexMejor;
 
 int obtenerNumero(char linea[]);
 void inicializarGrafo();
@@ -29,7 +43,9 @@ int todosObjetivosVisitados();
 void imprimirRuta(int ruta[], int largo);
 void actualizarMejorRuta();
 void recorrerGrafo(int nodoActual); 
-
+void inicializarEstadoRuta(struct EstadoRuta *estado, int nodoActual);
+void copiarEstadoRuta(struct EstadoRuta *origen, struct EstadoRuta *destino);
+int nodoEstaEnRutaEstado(struct EstadoRuta *estado, int nodo);
 
 int obtenerNumero(char linea[])
 {
@@ -326,28 +342,21 @@ void actualizarMejorRuta()
     /*
        Esta funcion compara la ruta actual con la mejor ruta encontrada.
 
-       largoRutaActual indica cuantos nodos tiene la ruta actual.
-       mejorLargo guarda el largo de la mejor ruta encontrada hasta ahora.
-
-       Si la ruta actual es mas corta que la mejor ruta guardada,
-       entonces se actualiza mejorRuta.
+       Como mas adelante varias hebras podrian intentar modificar
+       mejorRuta y mejorLargo al mismo tiempo, esta zona se protege
+       con un mutex.
     */
+
+    pthread_mutex_lock(&mutexMejor);
 
     if (largoRutaActual < mejorLargo) {
 
         mejorLargo = largoRutaActual;
 
-        /*
-           Copiamos la ruta actual en mejorRuta.
-        */
         for (i = 0; i < largoRutaActual; i++) {
             mejorRuta[i] = rutaActual[i];
         }
 
-        /*
-           Limpiamos el resto del arreglo mejorRuta con -1
-           para evitar que queden datos antiguos.
-        */
         for (i = largoRutaActual; i < MAX_RUTA; i++) {
             mejorRuta[i] = -1;
         }
@@ -357,8 +366,9 @@ void actualizarMejorRuta()
         printf("Cantidad de nodos visitados: %d\n", mejorLargo);
         printf("Cantidad de saltos: %d\n", mejorLargo - 1);
     }
-}
 
+    pthread_mutex_unlock(&mutexMejor);
+}
 void recorrerGrafo(int nodoActual)
 {
     int i;
@@ -457,14 +467,117 @@ void recorrerGrafo(int nodoActual)
     largoRutaActual--;
     rutaActual[largoRutaActual] = -1;
 }
+void inicializarEstadoRuta(struct EstadoRuta *estado, int nodoActual)
+{
+    int i;
+
+    /*
+       Inicializa una variable struct EstadoRuta.
+
+       Cada hebra tendrá su propio estado:
+       - nodo actual
+       - ruta recorrida
+       - objetivos visitados
+       - largo de la ruta
+    */
+
+    estado->nodoActual = nodoActual;
+    estado->largoRuta = 0;
+
+    for (i = 0; i < MAX_RUTA; i++) {
+        estado->ruta[i] = -1;
+    }
+
+    for (i = 0; i < CANT_OBJETIVOS; i++) {
+        estado->visitados[i] = 0;
+    }
+}
+
+void copiarEstadoRuta(struct EstadoRuta *origen, struct EstadoRuta *destino)
+{
+    int i;
+
+    /*
+       Copia un struct EstadoRuta en otro.
+
+       Esto será útil cuando una hebra cree otra ruta:
+       no se debe compartir la misma ruta, sino crear una copia.
+    */
+
+    destino->nodoActual = origen->nodoActual;
+    destino->largoRuta = origen->largoRuta;
+
+    for (i = 0; i < MAX_RUTA; i++) {
+        destino->ruta[i] = origen->ruta[i];
+    }
+
+    for (i = 0; i < CANT_OBJETIVOS; i++) {
+        destino->visitados[i] = origen->visitados[i];
+    }
+}
+int nodoEstaEnRutaEstado(struct EstadoRuta *estado, int nodo)
+{
+    int i;
+
+    /*
+       Esta funcion revisa si un nodo ya está dentro
+       de la ruta almacenada en un struct EstadoRuta.
+
+       Es similar a nodoEstaEnRuta(), pero en vez de revisar
+       la variable global rutaActual, revisa estado->ruta.
+
+       Esto será necesario para las hebras, porque cada hebra
+       tendrá su propio struct EstadoRuta.
+    */
+
+    for (i = 0; i < estado->largoRuta; i++) {
+
+        /*
+           Si el nodo aparece dentro de la ruta del estado,
+           retornamos 1.
+        */
+        if (estado->ruta[i] == nodo) {
+            return 1;
+        }
+    }
+
+    /*
+       Si no se encuentra el nodo, retornamos 0.
+    */
+    return 0;
+}
 
 int main()
 {
+    
+    struct EstadoRuta estadoInicial;
+    struct EstadoRuta copiaEstado;
+
     inicializarGrafo();
     leerGrafo();
-    imprimirGrafo();
 
     inicializarBusqueda();
+
+    sem_init(&semaforoHebras, 0, MAX_HEBRAS);
+    pthread_mutex_init(&mutexMejor, NULL);
+
+    inicializarEstadoRuta(&estadoInicial, nodoInicial);
+
+    estadoInicial.ruta[0] = nodoInicial;
+    estadoInicial.ruta[1] = 4;
+    estadoInicial.ruta[2] = 28;
+    estadoInicial.largoRuta = 3;
+
+    copiarEstadoRuta(&estadoInicial, &copiaEstado);
+
+    printf("\nPrueba struct EstadoRuta:\n");
+    printf("Nodo actual: %d\n", copiaEstado.nodoActual);
+    printf("Ruta copiada: ");
+    imprimirRuta(copiaEstado.ruta, copiaEstado.largoRuta);
+
+
+    printf("El nodo 4 esta en la ruta del estado? %d\n", nodoEstaEnRutaEstado(&copiaEstado, 4));
+    printf("El nodo 8 esta en la ruta del estado? %d\n", nodoEstaEnRutaEstado(&copiaEstado, 8));
 
     printf("\nBuscando rutas...\n");
 
@@ -472,16 +585,16 @@ int main()
 
     printf("\nMejor ruta final encontrada:\n");
 
-    if (mejorLargo == INFINITO) 
-    {
+    if (mejorLargo == INFINITO) {
         printf("No se encontro una ruta que pase por todos los objetivos.\n");
-    } 
-    else
-    {
+    } else {
         imprimirRuta(mejorRuta, mejorLargo);
         printf("Cantidad de nodos visitados: %d\n", mejorLargo);
         printf("Cantidad de saltos: %d\n", mejorLargo - 1);
     }
+
+    sem_destroy(&semaforoHebras);
+    pthread_mutex_destroy(&mutexMejor);
 
     return 0;
 }
