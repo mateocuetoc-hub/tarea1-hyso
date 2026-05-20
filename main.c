@@ -22,30 +22,36 @@ struct EstadoRuta
 int grafo[CANT_NODOS + 1][CANT_NODOS + 1];
 int objetivos[CANT_OBJETIVOS];
 int nodoInicial;
-
-int rutaActual[MAX_RUTA];
 int mejorRuta[MAX_RUTA];
-int visitados[CANT_OBJETIVOS];
-
-int largoRutaActual;
 int mejorLargo;
 sem_t semaforoHebras;
 pthread_mutex_t mutexMejor;
+
+int contadorHebrasActivas = 0;
+pthread_mutex_t mutexContador;
+pthread_cond_t condTodasTerminaron;
+pthread_mutex_t mutexPrinteo;
+
+struct EstadoRuta poolEstados[MAX_HEBRAS + 1];
+int poolUsado[MAX_HEBRAS + 1];
+pthread_mutex_t mutexPool;
 
 int obtenerNumero(char linea[]);
 void inicializarGrafo();
 void leerGrafo();
 void imprimirGrafo();
 void inicializarBusqueda();
-int nodoEstaEnRuta(int nodo);
 int buscarObjetivo(int nodo);
-int todosObjetivosVisitados();
 void imprimirRuta(int ruta[], int largo);
-void actualizarMejorRuta();
-void recorrerGrafo(int nodoActual); 
+int todosObjetivosVisitadosEstado(struct EstadoRuta *estado);
+void actualizarMejorRutaEstado(struct EstadoRuta *estado);
+struct EstadoRuta* pedirEstado();
+void devolverEstado(struct EstadoRuta *estado);
+void recorrerGrafo(struct EstadoRuta *estado);
 void inicializarEstadoRuta(struct EstadoRuta *estado, int nodoActual);
 void copiarEstadoRuta(struct EstadoRuta *origen, struct EstadoRuta *destino);
 int nodoEstaEnRutaEstado(struct EstadoRuta *estado, int nodo);
+void* hebra_recorrer(void* arg);
 
 int obtenerNumero(char linea[])
 {
@@ -169,50 +175,13 @@ void inicializarBusqueda()
 {
     int i;
 
-    largoRutaActual = 0;
     mejorLargo = INFINITO;
 
     for (i = 0; i < MAX_RUTA; i++) {
-        rutaActual[i] = -1;
         mejorRuta[i] = -1;
     }
-
-    for (i = 0; i < CANT_OBJETIVOS; i++) {
-        visitados[i] = 0;
-    }
 }
-int nodoEstaEnRuta(int nodo)
-{
-    int i;
 
-    /* 
-       Recorremos la ruta actual desde la posicion 0
-       hasta largoRutaActual - 1.
-       
-       largoRutaActual indica cuántos nodos tiene guardados
-       la ruta en este momento.
-    */
-    for (i = 0; i < largoRutaActual; i++) {
-
-        /*
-           Si encontramos el nodo dentro de rutaActual,
-           significa que ya pasamos por ese nodo en esta ruta.
-           
-           Retornamos 1 para indicar "sí está en la ruta".
-        */
-        if (rutaActual[i] == nodo) {
-            return 1;
-        }
-    }
-
-    /*
-       Si termina el ciclo y nunca encontramos el nodo,
-       significa que todavía no ha sido visitado en esta ruta.
-       
-       Retornamos 0 para indicar "no está en la ruta".
-    */
-    return 0;
-}
 int buscarObjetivo(int nodo)
 {
     int i;
@@ -254,48 +223,7 @@ int buscarObjetivo(int nodo)
     return -1;
 }
 
-int todosObjetivosVisitados()
-{
-    int i;
 
-    /*
-       Recorremos el arreglo visitados.
-       
-       Cada posicion representa si uno de los 5 nodos obligatorios
-       ya fue visitado en la ruta actual.
-       
-       Ejemplo:
-       objetivos:  2  8  17 20 28
-       visitados:  1  0  1  0  0
-       
-       Eso significa:
-       - ya pasamos por 2
-       - no pasamos por 8
-       - ya pasamos por 17
-       - no pasamos por 20
-       - no pasamos por 28
-    */
-    for (i = 0; i < CANT_OBJETIVOS; i++) {
-
-        /*
-           Si encontramos un 0, significa que todavía falta
-           visitar al menos un nodo obligatorio.
-           
-           Por eso retornamos 0.
-        */
-        if (visitados[i] == 0) {
-            return 0;
-        }
-    }
-
-    /*
-       Si el ciclo termina sin encontrar ceros,
-       significa que los 5 objetivos ya fueron visitados.
-       
-       Retornamos 1 para indicar que la ruta ya cumple.
-    */
-    return 1;
-}
 void imprimirRuta(int ruta[], int largo)
 {
     int i;
@@ -335,114 +263,219 @@ void imprimirRuta(int ruta[], int largo)
     printf("\n");
 }
 
-void actualizarMejorRuta()
+
+int todosObjetivosVisitadosEstado(struct EstadoRuta *estado)
 {
     int i;
+    for (i = 0; i < CANT_OBJETIVOS; i++) {
+        if (estado->visitados[i] == 0) {
+            return 0;
+        }
+    }
+    return 1;
+}
 
-    /*
-       Esta funcion compara la ruta actual con la mejor ruta encontrada.
+void actualizarMejorRutaEstado(struct EstadoRuta *estado)
+{
+    int i;
+    int largoLocal;
+    int rutaLocal[MAX_RUTA];
+    int hayNuevaMejor;
 
-       Como mas adelante varias hebras podrian intentar modificar
-       mejorRuta y mejorLargo al mismo tiempo, esta zona se protege
-       con un mutex.
-    */
+    hayNuevaMejor = 0;
 
     pthread_mutex_lock(&mutexMejor);
 
-    if (largoRutaActual < mejorLargo) {
+    if (estado->largoRuta < mejorLargo) {
+        mejorLargo = estado->largoRuta;
 
-        mejorLargo = largoRutaActual;
-
-        for (i = 0; i < largoRutaActual; i++) {
-            mejorRuta[i] = rutaActual[i];
+        for (i = 0; i < estado->largoRuta; i++) {
+            mejorRuta[i] = estado->ruta[i];
         }
-
-        for (i = largoRutaActual; i < MAX_RUTA; i++) {
+        for (i = estado->largoRuta; i < MAX_RUTA; i++) {
             mejorRuta[i] = -1;
         }
 
-        printf("\nNueva mejor ruta encontrada:\n");
-        imprimirRuta(mejorRuta, mejorLargo);
-        printf("Cantidad de nodos visitados: %d\n", mejorLargo);
-        printf("Cantidad de saltos: %d\n", mejorLargo - 1);
+        largoLocal = mejorLargo;
+        for (i = 0; i < largoLocal; i++) {
+            rutaLocal[i] = mejorRuta[i];
+        }
+        hayNuevaMejor = 1;
     }
 
     pthread_mutex_unlock(&mutexMejor);
+
+    if (hayNuevaMejor == 1) {
+        pthread_mutex_lock(&mutexPrinteo);
+        printf("\nNueva mejor ruta encontrada:\n");
+        imprimirRuta(rutaLocal, largoLocal);
+        printf("Cantidad de nodos visitados: %d\n", largoLocal);
+        printf("Cantidad de saltos: %d\n", largoLocal - 1);
+        pthread_mutex_unlock(&mutexPrinteo);
+    }
 }
-void recorrerGrafo(int nodoActual)
+
+/* Pool: pedir y devolver estados */
+struct EstadoRuta* pedirEstado()
+{
+    int i;
+    pthread_mutex_lock(&mutexPool);
+    for (i = 0; i <= MAX_HEBRAS; i++) {
+        if (poolUsado[i] == 0) {
+            poolUsado[i] = 1;
+            pthread_mutex_unlock(&mutexPool);
+            return &poolEstados[i];
+        }
+    }
+    pthread_mutex_unlock(&mutexPool);
+    return NULL;
+}
+
+void devolverEstado(struct EstadoRuta *estado)
+{
+    int i;
+    pthread_mutex_lock(&mutexPool);
+    for (i = 0; i <= MAX_HEBRAS; i++) {
+        if (&poolEstados[i] == estado) {
+            poolUsado[i] = 0;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&mutexPool);
+}
+
+
+void recorrerGrafo(struct EstadoRuta *estado)
 {
     int i;
     int vecino;
     int posicionObjetivo;
     int estabaVisitado;
+    int nodoActual;
+    int largoActual;
+    int errorHebra;
+    pthread_t identificadorHebra;
+    struct EstadoRuta *copiaEstado;
 
-    /*
-       Si la ruta ya alcanzó el máximo permitido,
-       no seguimos recorriendo para evitar salirnos del arreglo.
-    */
-    if (largoRutaActual >= MAX_RUTA) {
+    nodoActual = estado->nodoActual;
+
+    if (estado->largoRuta >= MAX_RUTA) {
         return;
     }
 
-    /*
-       Agregamos el nodo actual a la ruta.
-    */
-    rutaActual[largoRutaActual] = nodoActual;
-    largoRutaActual++;
+    /* Agregar nodo actual a la ruta local del estado */
+    estado->ruta[estado->largoRuta] = nodoActual;
+    estado->largoRuta++;
 
-    /*
-       Revisamos si el nodo actual es uno de los nodos obligatorios.
-       Si lo es, guardamos su posicion dentro del arreglo objetivos.
-       Si no lo es, buscarObjetivo retorna -1.
-    */
+    /* Revisar si el nodo actual es uno de los objetivos */
     posicionObjetivo = buscarObjetivo(nodoActual);
     estabaVisitado = 0;
 
-    /*
-       Si el nodo actual era objetivo, lo marcamos como visitado.
-       Antes guardamos si ya estaba visitado, porque al volver
-       de la recursion debemos restaurar el estado anterior.
-    */
     if (posicionObjetivo != -1) {
-        estabaVisitado = visitados[posicionObjetivo];
-        visitados[posicionObjetivo] = 1;
+        estabaVisitado = estado->visitados[posicionObjetivo];
+        estado->visitados[posicionObjetivo] = 1;
     }
 
-    /*
-       Si ya pasamos por los 5 nodos obligatorios,
-       la ruta actual es una solucion valida.
-       Entonces revisamos si es mejor que la mejor ruta guardada.
-    */
-    if (todosObjetivosVisitados() == 1) {
-        actualizarMejorRuta();
+    if (todosObjetivosVisitadosEstado(estado) == 1) {
+        actualizarMejorRutaEstado(estado);
     } else {
-
-        /*
-           Si todavia faltan objetivos, recorremos los vecinos
-           del nodo actual.
-
-           Como el grafo fue guardado como matriz de vecinos,
-           cada fila tiene vecinos hasta encontrar un -1.
-        */
         i = 0;
 
         while (i <= CANT_NODOS && grafo[nodoActual][i] != -1) {
             vecino = grafo[nodoActual][i];
 
-            /*
-               Solo avanzamos si el vecino no está ya en la ruta.
-               Esto evita ciclos como:
-               10 -> 4 -> 1 -> 10 -> 4 -> ...
-            */
-            if (nodoEstaEnRuta(vecino) == 0) {
+            if (nodoEstaEnRutaEstado(estado, vecino) == 0) {
 
-                /*
-                   Poda simple:
-                   si la ruta actual ya es igual o más larga que
-                   la mejor ruta encontrada, no conviene seguir.
-                */
-                if (largoRutaActual < mejorLargo) {
-                    recorrerGrafo(vecino);
+                pthread_mutex_lock(&mutexMejor);
+                largoActual = mejorLargo;
+                pthread_mutex_unlock(&mutexMejor);
+
+                if (estado->largoRuta < largoActual) {
+
+                    if (sem_trywait(&semaforoHebras) == 0) {
+
+                        /*
+                           Hay cupo en el semaforo para crear una nueva hebra.
+                           Pedimos un estado disponible desde el pool.
+                        */
+                        copiaEstado = pedirEstado();
+
+                        if (copiaEstado != NULL) {
+                            copiarEstadoRuta(estado, copiaEstado);
+                            copiaEstado->nodoActual = vecino;
+
+                            /*
+                               Aumentamos el contador antes de crear la hebra.
+                               Si pthread_create falla, lo corregimos abajo.
+                            */
+                            pthread_mutex_lock(&mutexContador);
+                            contadorHebrasActivas++;
+                            pthread_mutex_unlock(&mutexContador);
+
+                            errorHebra = pthread_create(&identificadorHebra, NULL, hebra_recorrer, copiaEstado);
+
+                            if (errorHebra == 0) {
+                                /*
+                                   Si la hebra se creó correctamente,
+                                   la dejamos detach para no hacer pthread_join.
+                                */
+                                pthread_detach(identificadorHebra);
+                            } else {
+                                /*
+                                   Si pthread_create falla:
+                                   - corregimos contador de hebras activas
+                                   - recorremos esta ruta de forma recursiva normal
+                                   - devolvemos el estado al pool
+                                   - liberamos el cupo del semaforo
+                                */
+                                pthread_mutex_lock(&mutexContador);
+                                contadorHebrasActivas--;
+
+                                if (contadorHebrasActivas == 0) {
+                                    pthread_cond_signal(&condTodasTerminaron);
+                                }
+
+                                pthread_mutex_unlock(&mutexContador);
+
+                                recorrerGrafo(copiaEstado);
+                                devolverEstado(copiaEstado);
+                                sem_post(&semaforoHebras);
+                            }
+                        } else {
+                            /*
+                               Si por alguna razón el pool no entrega estado,
+                               liberamos el cupo del semaforo y recorremos
+                               usando memoria dinámica para no perder el camino.
+                            */
+                            sem_post(&semaforoHebras);
+
+                            copiaEstado = (struct EstadoRuta*) malloc(sizeof(struct EstadoRuta));
+
+                            if (copiaEstado != NULL) {
+                                copiarEstadoRuta(estado, copiaEstado);
+                                copiaEstado->nodoActual = vecino;
+
+                                recorrerGrafo(copiaEstado);
+                                free(copiaEstado);
+                            }
+                        }
+
+                    } else {
+                        /*
+                           Si no hay cupo para crear otra hebra,
+                           seguimos recorriendo de forma recursiva normal
+                           en la hebra actual.
+                        */
+                        copiaEstado = (struct EstadoRuta*) malloc(sizeof(struct EstadoRuta));
+
+                        if (copiaEstado != NULL) {
+                            copiarEstadoRuta(estado, copiaEstado);
+                            copiaEstado->nodoActual = vecino;
+
+                            recorrerGrafo(copiaEstado);
+                            free(copiaEstado);
+                        }
+                    }
                 }
             }
 
@@ -452,21 +485,16 @@ void recorrerGrafo(int nodoActual)
 
     /*
        Backtracking:
-       Antes de salir de la funcion, debemos deshacer los cambios
-       hechos en este nivel de recursion.
-
-       Si marcamos un objetivo como visitado, lo dejamos como estaba antes.
+       restauramos el estado anterior antes de volver.
     */
     if (posicionObjetivo != -1) {
-        visitados[posicionObjetivo] = estabaVisitado;
+        estado->visitados[posicionObjetivo] = estabaVisitado;
     }
 
-    /*
-       Sacamos el nodo actual de la ruta.
-    */
-    largoRutaActual--;
-    rutaActual[largoRutaActual] = -1;
+    estado->largoRuta--;
+    estado->ruta[estado->largoRuta] = -1;
 }
+
 void inicializarEstadoRuta(struct EstadoRuta *estado, int nodoActual)
 {
     int i;
@@ -547,47 +575,116 @@ int nodoEstaEnRutaEstado(struct EstadoRuta *estado, int nodo)
     return 0;
 }
 
+void* hebra_recorrer(void* arg) 
+{
+    struct EstadoRuta *estado = (struct EstadoRuta*) arg;
+
+    recorrerGrafo(estado);
+    devolverEstado(estado);
+    sem_post(&semaforoHebras);  
+
+    pthread_mutex_lock(&mutexContador);
+    contadorHebrasActivas--;
+    if (contadorHebrasActivas == 0) 
+    {
+        pthread_cond_signal(&condTodasTerminaron);
+    }
+    pthread_mutex_unlock(&mutexContador);
+
+    return NULL;
+}
+
 int main()
 {
-    
-    struct EstadoRuta estadoInicial;
-    struct EstadoRuta copiaEstado;
+    struct EstadoRuta *estadoInicial;
+    pthread_t hebraInicial;
+    int errorHebra;
 
     inicializarGrafo();
     leerGrafo();
-
+    /* imprimirGrafo(); */
     inicializarBusqueda();
 
     sem_init(&semaforoHebras, 0, MAX_HEBRAS);
     pthread_mutex_init(&mutexMejor, NULL);
+    pthread_mutex_init(&mutexContador, NULL);
+    pthread_mutex_init(&mutexPrinteo, NULL);
+    pthread_mutex_init(&mutexPool, NULL);
+    pthread_cond_init(&condTodasTerminaron, NULL);
 
-    inicializarEstadoRuta(&estadoInicial, nodoInicial);
+    memset(poolUsado, 0, sizeof(poolUsado));
 
-    estadoInicial.ruta[0] = nodoInicial;
-    estadoInicial.ruta[1] = 4;
-    estadoInicial.ruta[2] = 28;
-    estadoInicial.largoRuta = 3;
+    estadoInicial = pedirEstado();
 
-    copiarEstadoRuta(&estadoInicial, &copiaEstado);
+    if (estadoInicial == NULL) 
+    {
+        printf("Error: no se pudo obtener estado inicial del pool.\n");
 
-    printf("\nPrueba struct EstadoRuta:\n");
-    printf("Nodo actual: %d\n", copiaEstado.nodoActual);
-    printf("Ruta copiada: ");
-    imprimirRuta(copiaEstado.ruta, copiaEstado.largoRuta);
+        sem_destroy(&semaforoHebras);
+        pthread_mutex_destroy(&mutexMejor);
+        pthread_mutex_destroy(&mutexContador);
+        pthread_mutex_destroy(&mutexPrinteo);
+        pthread_mutex_destroy(&mutexPool);
+        pthread_cond_destroy(&condTodasTerminaron);
 
+        return 1;
+    }
 
-    printf("El nodo 4 esta en la ruta del estado? %d\n", nodoEstaEnRutaEstado(&copiaEstado, 4));
-    printf("El nodo 8 esta en la ruta del estado? %d\n", nodoEstaEnRutaEstado(&copiaEstado, 8));
+    inicializarEstadoRuta(estadoInicial, nodoInicial);
 
-    printf("\nBuscando rutas...\n");
+    pthread_mutex_lock(&mutexContador);
+    contadorHebrasActivas = 1;
+    pthread_mutex_unlock(&mutexContador);
 
-    recorrerGrafo(nodoInicial);
+    sem_wait(&semaforoHebras);
+
+    errorHebra = pthread_create(&hebraInicial, NULL, hebra_recorrer, estadoInicial);
+
+    if (errorHebra == 0) 
+    {
+        pthread_detach(hebraInicial);
+    } 
+    else 
+    {
+        /*
+           Si no se pudo crear la hebra inicial, no perdemos la búsqueda.
+           Recorremos desde el main de forma normal usando el mismo estado.
+        */
+        printf("Advertencia: no se pudo crear la hebra inicial. Se ejecutara sin hebra inicial.\n");
+
+        recorrerGrafo(estadoInicial);
+
+        devolverEstado(estadoInicial);
+        sem_post(&semaforoHebras);
+
+        pthread_mutex_lock(&mutexContador);
+        contadorHebrasActivas--;
+
+        if (contadorHebrasActivas == 0) 
+        {
+            pthread_cond_signal(&condTodasTerminaron);
+        }
+
+        pthread_mutex_unlock(&mutexContador);
+    }
+
+    pthread_mutex_lock(&mutexContador);
+
+    while (contadorHebrasActivas > 0) 
+    {
+        pthread_cond_wait(&condTodasTerminaron, &mutexContador);
+    }
+
+    pthread_mutex_unlock(&mutexContador);
 
     printf("\nMejor ruta final encontrada:\n");
 
-    if (mejorLargo == INFINITO) {
+    if (mejorLargo == INFINITO) 
+    {
         printf("No se encontro una ruta que pase por todos los objetivos.\n");
-    } else {
+    } 
+    else 
+    {
         imprimirRuta(mejorRuta, mejorLargo);
         printf("Cantidad de nodos visitados: %d\n", mejorLargo);
         printf("Cantidad de saltos: %d\n", mejorLargo - 1);
@@ -595,6 +692,10 @@ int main()
 
     sem_destroy(&semaforoHebras);
     pthread_mutex_destroy(&mutexMejor);
+    pthread_mutex_destroy(&mutexContador);
+    pthread_mutex_destroy(&mutexPrinteo);
+    pthread_mutex_destroy(&mutexPool);
+    pthread_cond_destroy(&condTodasTerminaron);
 
     return 0;
 }
