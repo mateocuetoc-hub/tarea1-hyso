@@ -24,14 +24,21 @@ int objetivos[CANT_OBJETIVOS];
 int nodoInicial;
 int mejorRuta[MAX_RUTA];
 int mejorLargo;
+/* Semaforo para limitar a MAX_HEBRAS simultáneas (40) */
 sem_t semaforoHebras;
+
+/* Mutex para proteger el acceso y actualización de la mejor ruta global */
 pthread_mutex_t mutexMejor;
 
+/* Contador de hebras en ejecución y sus primitivas de sincronización */
 int contadorHebrasActivas = 0;
 pthread_mutex_t mutexContador;
 pthread_cond_t condTodasTerminaron;
+
+/* Mutex para asegurar que la salida estándar (printf) no se cruce entre hebras */
 pthread_mutex_t mutexPrinteo;
 
+/* Pool estático de estados para no abusar de malloc/free en la creación de hebras */
 struct EstadoRuta poolEstados[MAX_HEBRAS + 1];
 int poolUsado[MAX_HEBRAS + 1];
 pthread_mutex_t mutexPool;
@@ -275,6 +282,11 @@ int todosObjetivosVisitadosEstado(struct EstadoRuta *estado)
     return 1;
 }
 
+/*
+   Esta función verifica si una ruta recién encontrada es mejor (menor cantidad de saltos)
+   que la mejor ruta global encontrada hasta el momento.
+   Usa un mutex para garantizar exclusión mutua al leer/escribir variables compartidas.
+*/
 void actualizarMejorRutaEstado(struct EstadoRuta *estado)
 {
     int i;
@@ -390,8 +402,14 @@ void recorrerGrafo(struct EstadoRuta *estado)
                 largoActual = mejorLargo;
                 pthread_mutex_unlock(&mutexMejor);
 
+                /* 
+                   Branch & Bound (Poda): 
+                   Si el largo de la ruta actual ya es mayor o igual a la mejor ruta conocida, 
+                   no seguimos explorando este camino porque no mejorará la solución.
+                */
                 if (estado->largoRuta < largoActual) {
 
+                    /* Intentamos tomar un "cupo" del semáforo para crear una hebra sin bloquearnos */
                     if (sem_trywait(&semaforoHebras) == 0) {
 
                         /*
@@ -660,6 +678,7 @@ int main()
         pthread_mutex_lock(&mutexContador);
         contadorHebrasActivas--;
 
+        /* Si fue la única, avisamos a la variable de condición */
         if (contadorHebrasActivas == 0) 
         {
             pthread_cond_signal(&condTodasTerminaron);
