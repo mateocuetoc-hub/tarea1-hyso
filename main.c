@@ -1,3 +1,7 @@
+/*
+ * paralelo: INF2322-1
+ * Autores: Mateo Cueto, Martín González y Rodrigo Escudero 
+ */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
